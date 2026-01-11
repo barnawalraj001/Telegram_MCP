@@ -15,6 +15,8 @@ from tokens import (
     clear_phone_code_hash,
     is_otp_expired,
 )
+print("PORT =", os.getenv("PORT"))
+
 
 load_dotenv()
 
@@ -163,3 +165,9 @@ async def telegram_verify(user_id: str, phone: str, code: str):
         "status": "connected",
         "user_id": user_id,
     }
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
