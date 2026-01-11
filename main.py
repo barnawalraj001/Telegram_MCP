@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from telethon import TelegramClient
 from telethon.sessions import StringSession
+from contextlib import asynccontextmanager
 
 from telegram_api import get_client
 from tokens import (
@@ -15,32 +16,50 @@ from tokens import (
     clear_phone_code_hash,
     is_otp_expired,
 )
-print("PORT =", os.getenv("PORT"))
 
+# =========================================================
+# ENV SETUP
+# =========================================================
 
 load_dotenv()
 
+API_ID = os.getenv("TELEGRAM_API_ID")
+API_HASH = os.getenv("TELEGRAM_API_HASH")
 
-from contextlib import asynccontextmanager
+if not API_ID or not API_HASH:
+    raise RuntimeError("TELEGRAM_API_ID or TELEGRAM_API_HASH not set")
+
+API_ID = int(API_ID)
+
+print("PORT =", os.getenv("PORT"))
+
+# =========================================================
+# FASTAPI APP (Railway-safe)
+# =========================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # App is ready immediately
+    # App is considered ready immediately
     yield
 
 app = FastAPI(lifespan=lifespan)
 
-print("PORT =", os.getenv("PORT"))
+# =========================================================
+# HEALTH ENDPOINTS (Railway probes these)
+# =========================================================
 
+@app.get("/")
+async def root():
+    return {"status": "ok", "service": "telegram-mcp"}
 
-load_dotenv()
-API_ID = int(os.getenv("TELEGRAM_API_ID"))
-API_HASH = os.getenv("TELEGRAM_API_HASH")
-
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
 # =========================================================
-# MCP HANDLER (shared logic)
+# MCP HANDLER (JSON-RPC)
 # =========================================================
+
 async def handle_mcp(req: Request):
     body = await req.json()
     method = body.get("method")
@@ -54,9 +73,28 @@ async def handle_mcp(req: Request):
             "id": id_,
             "result": {
                 "tools": [
-                    {"name": "telegram.list_chats"},
-                    {"name": "telegram.send_message"},
-                    {"name": "telegram.search_messages"},
+                    {
+                        "name": "telegram.list_chats",
+                        "params": {
+                            "user_id": "string"
+                        }
+                    },
+                    {
+                        "name": "telegram.send_message",
+                        "params": {
+                            "user_id": "string",
+                            "chat_id": "number",
+                            "text": "string"
+                        }
+                    },
+                    {
+                        "name": "telegram.search_messages",
+                        "params": {
+                            "user_id": "string",
+                            "chat_id": "number",
+                            "query": "string"
+                        }
+                    },
                 ]
             },
         }
@@ -69,11 +107,7 @@ async def handle_mcp(req: Request):
         dialogs = await client.get_dialogs(limit=20)
         chats = [{"id": d.id, "name": d.name} for d in dialogs]
 
-        return {
-            "jsonrpc": "2.0",
-            "id": id_,
-            "result": chats,
-        }
+        return {"jsonrpc": "2.0", "id": id_, "result": chats}
 
     # ---------- telegram.send_message ----------
     if method == "telegram.send_message":
@@ -84,11 +118,7 @@ async def handle_mcp(req: Request):
         client = await get_client(user_id)
         await client.send_message(chat_id, text)
 
-        return {
-            "jsonrpc": "2.0",
-            "id": id_,
-            "result": "Message sent",
-        }
+        return {"jsonrpc": "2.0", "id": id_, "result": "Message sent"}
 
     # ---------- telegram.search_messages ----------
     if method == "telegram.search_messages":
@@ -111,28 +141,13 @@ async def handle_mcp(req: Request):
         "error": "Unknown method",
     }
 
-
 # =========================================================
-# MCP ENDPOINTS
+# MCP ENDPOINT (ONLY ONE)
 # =========================================================
 
-@app.get("/")
-async def root():
-    return {"status": "ok"}
-
-
-
-# Primary MCP endpoint (USE THIS IN RAILWAY / VARTICAS)
 @app.post("/mcp")
 async def mcp(req: Request):
     return await handle_mcp(req)
-
-
-# Optional backward compatibility (safe to remove later)
-@app.post("/")
-async def root(req: Request):
-    return await handle_mcp(req)
-
 
 # =========================================================
 # TELEGRAM AUTH FLOW
@@ -149,7 +164,6 @@ async def telegram_login(user_id: str, phone: str):
     save_auth_client(user_id, client)
 
     return {"status": "code_sent"}
-
 
 @app.get("/auth/telegram/verify")
 async def telegram_verify(user_id: str, phone: str, code: str):
@@ -179,13 +193,4 @@ async def telegram_verify(user_id: str, phone: str, code: str):
     clear_phone_code_hash(user_id)
     clear_auth_client(user_id)
 
-    return {
-        "status": "connected",
-        "user_id": user_id,
-    }
-
-
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
+    return {"status": "connected", "user_id": user_id}
