@@ -104,6 +104,11 @@ async def handle_mcp(req: Request):
 # MCP ENDPOINTS
 # =========================================================
 
+@app.get("/")
+async def root():
+    return {"status": "ok", "service": "telegram-mcp"}
+
+
 # Primary MCP endpoint (USE THIS IN RAILWAY / VARTICAS)
 @app.post("/mcp")
 async def mcp(req: Request):
