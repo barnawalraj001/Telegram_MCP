@@ -20,8 +20,20 @@ print("PORT =", os.getenv("PORT"))
 
 load_dotenv()
 
-app = FastAPI()
 
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # App is ready immediately
+    yield
+
+app = FastAPI(lifespan=lifespan)
+
+print("PORT =", os.getenv("PORT"))
+
+
+load_dotenv()
 API_ID = int(os.getenv("TELEGRAM_API_ID"))
 API_HASH = os.getenv("TELEGRAM_API_HASH")
 
@@ -106,7 +118,8 @@ async def handle_mcp(req: Request):
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "service": "telegram-mcp"}
+    return {"status": "ok"}
+
 
 
 # Primary MCP endpoint (USE THIS IN RAILWAY / VARTICAS)
