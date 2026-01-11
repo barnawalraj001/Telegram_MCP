@@ -1,16 +1,21 @@
 # telegram_api.py
-
 import os
 from dotenv import load_dotenv
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from tokens import get_telegram_session
 
-load_dotenv()  # ✅ ADD THIS
+load_dotenv()  # safe locally, ignored in prod
 
-API_ID = int(os.getenv("TELEGRAM_API_ID"))
+API_ID = os.getenv("TELEGRAM_API_ID")
 API_HASH = os.getenv("TELEGRAM_API_HASH")
 
+if not API_ID or not API_HASH:
+    raise RuntimeError(
+        "TELEGRAM_API_ID or TELEGRAM_API_HASH not set in environment variables"
+    )
+
+API_ID = int(API_ID)
 
 
 async def get_client(user_id: str):
@@ -21,7 +26,7 @@ async def get_client(user_id: str):
     client = TelegramClient(
         StringSession(session),
         API_ID,
-        API_HASH
+        API_HASH,
     )
     await client.connect()
     return client
