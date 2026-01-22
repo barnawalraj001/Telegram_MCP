@@ -125,7 +125,7 @@ async def handle_mcp(req: Request):
 
         return {"jsonrpc": "2.0", "id": id_, "result": chats}
 
-    # ---------- telegram.send_message ----------
+        # ---------- telegram.send_message ----------
     if method == "telegram.send_message":
         user_id = params["user_id"]
         chat_id = params["chat_id"]
@@ -134,8 +134,24 @@ async def handle_mcp(req: Request):
         client = await get_client(user_id)
 
         try:
-            entity = await client.get_input_entity(chat_id)
+            # Resolve entity from dialogs (MOST RELIABLE)
+            dialogs = await client.get_dialogs(limit=200)
+
+            entity = None
+            for d in dialogs:
+                if d.id == chat_id:
+                    entity = d.entity
+                    break
+
+            if not entity:
+                return {
+                    "jsonrpc": "2.0",
+                    "id": id_,
+                    "error": "Chat not found in dialogs. Use chat_id from telegram.list_chats."
+                }
+
             await client.send_message(entity, text)
+
         except Exception as e:
             return {
                 "jsonrpc": "2.0",
@@ -143,7 +159,12 @@ async def handle_mcp(req: Request):
                 "error": str(e),
             }
 
-        return {"jsonrpc": "2.0", "id": id_, "result": "Message sent"}
+        return {
+            "jsonrpc": "2.0",
+            "id": id_,
+            "result": "Message sent",
+        }
+
 
     # ---------- telegram.search_messages ----------
     if method == "telegram.search_messages":
