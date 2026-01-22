@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from contextlib import asynccontextmanager
@@ -39,10 +40,27 @@ print("PORT =", os.getenv("PORT"))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # App is considered ready immediately
     yield
 
 app = FastAPI(lifespan=lifespan)
+
+# =========================================================
+# CORS (REQUIRED FOR FRONTEND)
+# =========================================================
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://api.varticas.com",
+        "https://www.varticas.com",
+        "https://telegram.varticas.com",
+        "http://localhost:3000",
+        "http://localhost:3001"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # =========================================================
 # HEALTH ENDPOINTS (Railway probes these)
@@ -75,25 +93,23 @@ async def handle_mcp(req: Request):
                 "tools": [
                     {
                         "name": "telegram.list_chats",
-                        "params": {
-                            "user_id": "string"
-                        }
+                        "params": {"user_id": "string"},
                     },
                     {
                         "name": "telegram.send_message",
                         "params": {
                             "user_id": "string",
                             "chat_id": "number",
-                            "text": "string"
-                        }
+                            "text": "string",
+                        },
                     },
                     {
                         "name": "telegram.search_messages",
                         "params": {
                             "user_id": "string",
                             "chat_id": "number",
-                            "query": "string"
-                        }
+                            "query": "string",
+                        },
                     },
                 ]
             },
@@ -116,7 +132,16 @@ async def handle_mcp(req: Request):
         text = params["text"]
 
         client = await get_client(user_id)
-        await client.send_message(chat_id, text)
+
+        try:
+            entity = await client.get_input_entity(chat_id)
+            await client.send_message(entity, text)
+        except Exception as e:
+            return {
+                "jsonrpc": "2.0",
+                "id": id_,
+                "error": str(e),
+            }
 
         return {"jsonrpc": "2.0", "id": id_, "result": "Message sent"}
 
@@ -142,7 +167,7 @@ async def handle_mcp(req: Request):
     }
 
 # =========================================================
-# MCP ENDPOINT (ONLY ONE)
+# MCP ENDPOINT
 # =========================================================
 
 @app.post("/mcp")
