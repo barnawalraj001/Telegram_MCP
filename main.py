@@ -142,21 +142,18 @@ def _json_serializer(obj):
 # MCP HANDLER (JSON-RPC)
 # =========================================================
 
-async def handle_mcp(req: Request):
-    body = await req.json()
+async def handle_mcp(body: dict):
+    # Accepts the already-parsed request body as a plain dict.
+    # tools/call unwrapping: Varticas gateway sends
+    #   { method: "tools/call", params: { name: "telegram.xxx", arguments: {...} } }
     method = body.get("method")
     id_ = body.get("id")
     params = body.get("params", {})
 
     # ---------- tools/call (standard MCP wrapper) ----------
-    # Varticas gateway sends:
-    #   { method: "tools/call", params: { name: "telegram.xxx", arguments: {...} } }
-    # We unwrap it so the existing per-method handlers work unchanged.
-    _is_tools_call = (method == "tools/call")
-    if _is_tools_call:
-        tool_name = params.get("name", "")
-        method = tool_name                      # e.g. "telegram.send_message"
-        params  = params.get("arguments", {})  # the actual arguments dict
+    if method == "tools/call":
+        method = params.get("name", "")         # e.g. "telegram.send_message"
+        params = params.get("arguments", {})    # the actual arguments dict
 
     # ---------- tools/list ----------
     if method == "tools/list":
@@ -970,26 +967,20 @@ async def handle_mcp(req: Request):
 
 @app.post("/mcp")
 async def mcp(req: Request):
-    # Peek at the body to detect tools/call before delegating
-    body = await req.json()
+    # Parse body exactly once — avoids any double-read / stream-consumed issues
+    try:
+        body = await req.json()
+    except Exception:
+        return {"jsonrpc": "2.0", "id": None, "error": "Invalid JSON body"}
+
     is_tools_call = body.get("method") == "tools/call"
 
-    # Re-inject body into a mock request (handle_mcp reads req.json())
-    from fastapi import Request as _Req
-    from starlette.datastructures import Headers as _Headers
-    import json as _json
+    # Delegate to handler (receives plain dict, never the Request object)
+    response = await handle_mcp(body)
 
-    # Build a synthetic Request that handle_mcp can read
-    class _BodyRequest:
-        async def json(self_inner):
-            return body
-
-    response = await handle_mcp(_BodyRequest())
-
-    # Wrap response for tools/call callers
+    # Wrap response in MCP content envelope for tools/call callers
     if is_tools_call:
         if "error" in response and "result" not in response:
-            # Tool returned an error
             return {
                 "jsonrpc": "2.0",
                 "id": response.get("id"),
@@ -999,10 +990,9 @@ async def mcp(req: Request):
                 },
             }
         else:
-            # Successful result — serialize to JSON text so the gateway can parse it
             result_payload = response.get("result", "")
             if not isinstance(result_payload, str):
-                result_payload = _json.dumps(result_payload, ensure_ascii=False)
+                result_payload = json.dumps(result_payload, ensure_ascii=False)
             return {
                 "jsonrpc": "2.0",
                 "id": response.get("id"),
