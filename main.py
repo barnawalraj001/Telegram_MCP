@@ -144,17 +144,26 @@ def _json_serializer(obj):
 
 async def handle_mcp(body: dict):
     # Accepts the already-parsed request body as a plain dict.
-    # tools/call unwrapping: Varticas gateway sends
-    #   { method: "tools/call", params: { name: "telegram.xxx", arguments: {...} } }
     method = body.get("method")
     id_ = body.get("id")
-    params = body.get("params", {})
+    params = body.get("params") or {}
 
     # ---------- tools/call (standard MCP wrapper) ----------
+    # Varticas gateway sends: { method: "tools/call", params: { name: "...", arguments: {...} } }
     if method == "tools/call":
-        method = params.get("name", "")         # e.g. "telegram.send_message"
-        params = params.get("arguments", {})    # the actual arguments dict
+        method = params.get("name", "")
+        # Guard: arguments may be null/None — always fall back to {}
+        params = params.get("arguments") or {}
 
+    try:
+        return await _dispatch(method, id_, params)
+    except KeyError as e:
+        return {"jsonrpc": "2.0", "id": id_, "error": f"Missing required parameter: {e}"}
+    except Exception as e:
+        return {"jsonrpc": "2.0", "id": id_, "error": str(e)}
+
+
+async def _dispatch(method: str, id_, params: dict):
     # ---------- tools/list ----------
     if method == "tools/list":
         return {
