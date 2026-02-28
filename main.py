@@ -4,7 +4,8 @@ import asyncio
 from datetime import datetime, timedelta
 from typing import Union, Optional, List, Any, Dict
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from telethon import TelegramClient, utils, functions, types
 from telethon.tl.types import User, Chat, Channel
@@ -21,6 +22,9 @@ from tokens import (
     get_phone_code_hash,
     clear_phone_code_hash,
     is_otp_expired,
+    save_redirect_origin,
+    get_redirect_origin,
+    delete_telegram_session,
 )
 
 # =========================================================
@@ -53,15 +57,14 @@ app = FastAPI(lifespan=lifespan)
 # CORS (REQUIRED FOR FRONTEND)
 # =========================================================
 
+FRONTEND_URLS_ENV = os.getenv("FRONTEND_URLS", "http://localhost:3000")
+FRONTEND_URLS = [url.strip() for url in FRONTEND_URLS_ENV.split(",") if url.strip()]
+if not FRONTEND_URLS:
+    FRONTEND_URLS = ["http://localhost:3000"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://api.varticas.com",
-        "https://www.varticas.com",
-        "https://telegram.varticas.com",
-        "http://localhost:3000",
-        "http://localhost:3001"
-    ],
+    allow_origins=FRONTEND_URLS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1019,7 +1022,13 @@ async def mcp(req: Request):
 # =========================================================
 
 @app.get("/auth/telegram/login")
-async def telegram_login(user_id: str, phone: str):
+async def telegram_login(user_id: str, phone: str, redirect_origin: str):
+    if not redirect_origin:
+        raise HTTPException(status_code=400, detail="redirect_origin is required")
+
+    if redirect_origin not in FRONTEND_URLS:
+        raise HTTPException(status_code=400, detail="Invalid redirect_origin")
+
     client = TelegramClient(StringSession(), API_ID, API_HASH)
     await client.connect()
 
@@ -1027,21 +1036,24 @@ async def telegram_login(user_id: str, phone: str):
 
     save_phone_code_hash(user_id, sent.phone_code_hash)
     save_auth_client(user_id, client)
+    save_redirect_origin(user_id, redirect_origin)
 
     return {"status": "code_sent"}
 
 @app.get("/auth/telegram/verify")
 async def telegram_verify(user_id: str, phone: str, code: str):
+    redirect_origin = get_redirect_origin(user_id) or FRONTEND_URLS[0]
+
     if is_otp_expired(user_id):
-        return {"error": "OTP expired. Please request again."}
+        return RedirectResponse(f"{redirect_origin}/integrations/callback?service=telegram&status=error")
 
     client = get_auth_client(user_id)
     if not client:
-        return {"error": "Auth session lost. Please login again."}
+        return RedirectResponse(f"{redirect_origin}/integrations/callback?service=telegram&status=error")
 
     phone_code_hash = get_phone_code_hash(user_id)
     if not phone_code_hash:
-        return {"error": "No active OTP session."}
+        return RedirectResponse(f"{redirect_origin}/integrations/callback?service=telegram&status=error")
 
     try:
         await client.sign_in(
@@ -1050,7 +1062,7 @@ async def telegram_verify(user_id: str, phone: str, code: str):
             phone_code_hash=phone_code_hash,
         )
     except Exception as e:
-        return {"error": str(e)}
+        return RedirectResponse(f"{redirect_origin}/integrations/callback?service=telegram&status=error")
 
     session_string = client.session.save()
     save_telegram_session(user_id, session_string)
@@ -1058,4 +1070,18 @@ async def telegram_verify(user_id: str, phone: str, code: str):
     clear_phone_code_hash(user_id)
     clear_auth_client(user_id)
 
-    return {"status": "connected", "user_id": user_id}
+    return RedirectResponse(f"{redirect_origin}/integrations/callback?service=telegram&status=success")
+
+@app.post("/auth/disconnect")
+async def disconnect(request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON body"})
+        
+    user_id = payload.get("user_id")
+    if not user_id:
+        return JSONResponse(status_code=400, content={"error": "Missing user_id"})
+
+    delete_telegram_session(user_id)
+    return JSONResponse(content={"success": True, "service": "telegram"})

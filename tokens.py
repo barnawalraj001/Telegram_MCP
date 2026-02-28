@@ -26,6 +26,16 @@ _redis: redis.Redis = redis.from_url(REDIS_URL, decode_responses=True)
 _SESSION_PREFIX   = "tg:session:"       # tg:session:<user_id>
 _CODE_HASH_PREFIX = "tg:code_hash:"     # tg:code_hash:<user_id>
 _CODE_TS_PREFIX   = "tg:code_ts:"       # tg:code_ts:<user_id>  (unix float as str)
+_REDIRECT_PREFIX  = "tg:redirect:"      # tg:redirect:<user_id>
+
+# ── Redirect Origin (For Callback flow) ───────────────────────────────────────
+
+def save_redirect_origin(user_id: str, redirect_origin: str) -> None:
+    ttl = OTP_EXPIRY_SECONDS + 30
+    _redis.setex(f"{_REDIRECT_PREFIX}{user_id}", ttl, redirect_origin)
+
+def get_redirect_origin(user_id: str) -> str | None:
+    return _redis.get(f"{_REDIRECT_PREFIX}{user_id}")
 
 # ── In-memory store (auth clients only) ──────────────────────────────────────
 
