@@ -3,3 +3,5 @@ uvicorn
 telethon
 python-dotenv
 redis
+PyJWT
+cryptography

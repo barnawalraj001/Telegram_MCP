@@ -1,12 +1,14 @@
 import os
 import json
 import asyncio
+import jwt
 from datetime import datetime, timedelta
 from typing import Union, Optional, List, Any, Dict
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from telethon import TelegramClient, utils, functions, types
 from telethon.tl.types import User, Chat, Channel
 from telethon.sessions import StringSession
@@ -35,13 +37,49 @@ load_dotenv()
 
 API_ID = os.getenv("TELEGRAM_API_ID")
 API_HASH = os.getenv("TELEGRAM_API_HASH")
+MCP_SECRET = os.getenv("MCP_SECRET")
 
 if not API_ID or not API_HASH:
     raise RuntimeError("TELEGRAM_API_ID or TELEGRAM_API_HASH not set")
 
 API_ID = int(API_ID)
 
+FRONTEND_URLS_ENV = os.getenv("FRONTEND_URLS", "http://localhost:3000")
+FRONTEND_URLS = [url.strip() for url in FRONTEND_URLS_ENV.split(",") if url.strip()]
+if not FRONTEND_URLS:
+    FRONTEND_URLS = ["http://localhost:3000"]
+
+THIS_MCP = "telegram"
+
 print("PORT =", os.getenv("PORT"))
+
+
+# =========================================================
+# JWT VERIFICATION
+# =========================================================
+
+def _verify_mcp_token(request: Request) -> dict:
+    """Verify the MCP JWT from the Authorization header and return the decoded payload."""
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise ValueError("Missing or malformed Authorization header")
+
+    token = auth_header.split(" ", 1)[1]
+
+    try:
+        decoded = jwt.decode(token, MCP_SECRET, algorithms=["HS256"])
+    except jwt.ExpiredSignatureError:
+        raise ValueError("Token expired")
+    except jwt.InvalidTokenError:
+        raise ValueError("Invalid token")
+
+    provider = decoded.get("mcp")
+    if provider != THIS_MCP:
+        raise ValueError(
+            f"Token not valid for this MCP service (expected '{THIS_MCP}', got '{provider}')"
+        )
+
+    return decoded
 
 # =========================================================
 # FASTAPI APP (Railway-safe)
@@ -53,19 +91,16 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
+
 # =========================================================
 # CORS (REQUIRED FOR FRONTEND)
 # =========================================================
 
-FRONTEND_URLS_ENV = os.getenv("FRONTEND_URLS", "http://localhost:3000")
-FRONTEND_URLS = [url.strip() for url in FRONTEND_URLS_ENV.split(",") if url.strip()]
-if not FRONTEND_URLS:
-    FRONTEND_URLS = ["http://localhost:3000"]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=FRONTEND_URLS,
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -145,7 +180,7 @@ def _json_serializer(obj):
 # MCP HANDLER (JSON-RPC)
 # =========================================================
 
-async def handle_mcp(body: dict):
+async def handle_mcp(body: dict, request: Request):
     # Accepts the already-parsed request body as a plain dict.
     method = body.get("method")
     id_ = body.get("id")
@@ -154,9 +189,30 @@ async def handle_mcp(body: dict):
     # ---------- tools/call (standard MCP wrapper) ----------
     # Varticas gateway sends: { method: "tools/call", params: { name: "...", arguments: {...} } }
     if method == "tools/call":
-        method = params.get("name", "")
+        tool_name = params.get("name", "")
         # Guard: arguments may be null/None — always fall back to {}
-        params = params.get("arguments") or {}
+        tool_args = params.get("arguments") or {}
+
+        # ── JWT verification ──────────────────────────────────────────
+        try:
+            decoded = _verify_mcp_token(request)
+        except ValueError as exc:
+            return JSONResponse(
+                status_code=401,
+                content={"jsonrpc": "2.0", "id": id_, "error": {"code": -32001, "message": str(exc)}},
+            )
+
+        user_id = decoded.get("uid")
+        if not user_id:
+            return JSONResponse(
+                status_code=401,
+                content={"jsonrpc": "2.0", "id": id_, "error": {"code": -32001, "message": "JWT missing 'uid' claim"}},
+            )
+
+        # Inject the verified user_id — overrides whatever the client sent
+        tool_args["user_id"] = user_id
+        method = tool_name
+        params = tool_args
 
     try:
         return await _dispatch(method, id_, params)
@@ -987,8 +1043,12 @@ async def mcp(req: Request):
 
     is_tools_call = body.get("method") == "tools/call"
 
-    # Delegate to handler (receives plain dict, never the Request object)
-    response = await handle_mcp(body)
+    # Delegate to handler — now passes the Request so JWT can be verified
+    response = await handle_mcp(body, req)
+
+    # If handle_mcp returned a JSONResponse (e.g. 401), return it directly
+    if isinstance(response, JSONResponse):
+        return response
 
     # Wrap response in MCP content envelope for tools/call callers
     if is_tools_call:
@@ -1074,14 +1134,15 @@ async def telegram_verify(user_id: str, phone: str, code: str):
 
 @app.post("/auth/disconnect")
 async def disconnect(request: Request) -> JSONResponse:
+    # Verify JWT so only the authenticated user can disconnect their own session
     try:
-        payload = await request.json()
-    except Exception:
-        return JSONResponse(status_code=400, content={"error": "Invalid JSON body"})
-        
-    user_id = payload.get("user_id")
+        decoded = _verify_mcp_token(request)
+    except ValueError as exc:
+        return JSONResponse(status_code=401, content={"error": str(exc)})
+
+    user_id = decoded.get("uid")
     if not user_id:
-        return JSONResponse(status_code=400, content={"error": "Missing user_id"})
+        return JSONResponse(status_code=401, content={"error": "JWT missing 'uid' claim"})
 
     delete_telegram_session(user_id)
     return JSONResponse(content={"success": True, "service": "telegram"})
