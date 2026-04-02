@@ -81,6 +81,11 @@ def _verify_mcp_token(request: Request) -> dict:
 
     return decoded
 
+
+def _user_id_from_jwt(decoded: dict) -> Optional[str]:
+    return decoded.get("uid") or decoded.get("user_id") or decoded.get("sub")
+
+
 # =========================================================
 # FASTAPI APP (Railway-safe)
 # =========================================================
@@ -202,11 +207,18 @@ async def handle_mcp(body: dict, request: Request):
                 content={"jsonrpc": "2.0", "id": id_, "error": {"code": -32001, "message": str(exc)}},
             )
 
-        user_id = decoded.get("uid")
+        user_id = _user_id_from_jwt(decoded)
         if not user_id:
             return JSONResponse(
                 status_code=401,
-                content={"jsonrpc": "2.0", "id": id_, "error": {"code": -32001, "message": "JWT missing 'uid' claim"}},
+                content={
+                    "jsonrpc": "2.0",
+                    "id": id_,
+                    "error": {
+                        "code": -32001,
+                        "message": "JWT missing user identity claim ('uid', 'user_id', or 'sub')",
+                    },
+                },
             )
 
         # Inject the verified user_id — overrides whatever the client sent
@@ -229,168 +241,170 @@ async def _dispatch(method: str, id_, params: dict):
             "jsonrpc": "2.0",
             "id": id_,
             "result": {
+                # On tools/call, user_id is taken from the verified Bearer JWT and injected;
+                # it is not listed as a tool argument below.
                 "tools": [
                     # ── Chat / Message Read ──
                     {
                         "name": "telegram.list_chats",
                         "description": "List recent chats (paginated, filter by type: user/group/channel)",
-                        "params": {"user_id": "string", "chat_type": "string|null", "limit": "number"},
+                        "params": {"chat_type": "string|null", "limit": "number"},
                     },
                     {
                         "name": "telegram.get_chat",
                         "description": "Get detailed info about a specific chat by ID or username",
-                        "params": {"user_id": "string", "chat_id": "number|string"},
+                        "params": {"chat_id": "number|string"},
                     },
                     {
                         "name": "telegram.get_messages",
                         "description": "Get paginated messages from a chat",
-                        "params": {"user_id": "string", "chat_id": "number|string", "page": "number", "page_size": "number"},
+                        "params": {"chat_id": "number|string", "page": "number", "page_size": "number"},
                     },
                     {
                         "name": "telegram.list_messages",
                         "description": "Get messages with optional text search and date filters (from_date/to_date: YYYY-MM-DD)",
-                        "params": {"user_id": "string", "chat_id": "number|string", "limit": "number", "search_query": "string|null", "from_date": "string|null", "to_date": "string|null"},
+                        "params": {"chat_id": "number|string", "limit": "number", "search_query": "string|null", "from_date": "string|null", "to_date": "string|null"},
                     },
                     {
                         "name": "telegram.search_messages",
                         "description": "Search messages in a chat by text query",
-                        "params": {"user_id": "string", "chat_id": "number|string", "query": "string", "limit": "number"},
+                        "params": {"chat_id": "number|string", "query": "string", "limit": "number"},
                     },
                     {
                         "name": "telegram.get_pinned_messages",
                         "description": "Get all pinned messages in a chat",
-                        "params": {"user_id": "string", "chat_id": "number|string"},
+                        "params": {"chat_id": "number|string"},
                     },
                     {
                         "name": "telegram.get_history",
                         "description": "Get full chat history up to a limit",
-                        "params": {"user_id": "string", "chat_id": "number|string", "limit": "number"},
+                        "params": {"chat_id": "number|string", "limit": "number"},
                     },
                     {
                         "name": "telegram.get_participants",
                         "description": "List all participants in a group or channel",
-                        "params": {"user_id": "string", "chat_id": "number|string"},
+                        "params": {"chat_id": "number|string"},
                     },
                     # ── Message Actions ──
                     {
                         "name": "telegram.send_message",
                         "description": "Send a text message to a chat",
-                        "params": {"user_id": "string", "chat_id": "number|string", "text": "string"},
+                        "params": {"chat_id": "number|string", "text": "string"},
                     },
                     {
                         "name": "telegram.reply_to_message",
                         "description": "Reply to a specific message in a chat",
-                        "params": {"user_id": "string", "chat_id": "number|string", "message_id": "number", "text": "string"},
+                        "params": {"chat_id": "number|string", "message_id": "number", "text": "string"},
                     },
                     {
                         "name": "telegram.edit_message",
                         "description": "Edit a message you sent",
-                        "params": {"user_id": "string", "chat_id": "number|string", "message_id": "number", "new_text": "string"},
+                        "params": {"chat_id": "number|string", "message_id": "number", "new_text": "string"},
                     },
                     {
                         "name": "telegram.delete_message",
                         "description": "Delete a message by ID",
-                        "params": {"user_id": "string", "chat_id": "number|string", "message_id": "number"},
+                        "params": {"chat_id": "number|string", "message_id": "number"},
                     },
                     {
                         "name": "telegram.forward_message",
                         "description": "Forward a message from one chat to another",
-                        "params": {"user_id": "string", "from_chat_id": "number|string", "message_id": "number", "to_chat_id": "number|string"},
+                        "params": {"from_chat_id": "number|string", "message_id": "number", "to_chat_id": "number|string"},
                     },
                     {
                         "name": "telegram.pin_message",
                         "description": "Pin a message in a chat",
-                        "params": {"user_id": "string", "chat_id": "number|string", "message_id": "number"},
+                        "params": {"chat_id": "number|string", "message_id": "number"},
                     },
                     {
                         "name": "telegram.unpin_message",
                         "description": "Unpin a message in a chat",
-                        "params": {"user_id": "string", "chat_id": "number|string", "message_id": "number"},
+                        "params": {"chat_id": "number|string", "message_id": "number"},
                     },
                     {
                         "name": "telegram.mark_as_read",
                         "description": "Mark all messages as read in a chat",
-                        "params": {"user_id": "string", "chat_id": "number|string"},
+                        "params": {"chat_id": "number|string"},
                     },
                     {
                         "name": "telegram.send_reaction",
                         "description": "React to a message with an emoji (e.g. 👍 ❤️ 🔥)",
-                        "params": {"user_id": "string", "chat_id": "number|string", "message_id": "number", "emoji": "string"},
+                        "params": {"chat_id": "number|string", "message_id": "number", "emoji": "string"},
                     },
                     # ── Contacts ──
                     {
                         "name": "telegram.list_contacts",
-                        "description": "List all contacts in the Telegram account",
-                        "params": {"user_id": "string"},
+                        "description": "List all contacts in the Telegram account (caller identity from Authorization Bearer JWT).",
+                        "params": {},
                     },
                     {
                         "name": "telegram.search_contacts",
                         "description": "Search contacts by name, username, or phone",
-                        "params": {"user_id": "string", "query": "string"},
+                        "params": {"query": "string"},
                     },
                     {
                         "name": "telegram.add_contact",
                         "description": "Add a new contact (by phone or username)",
-                        "params": {"user_id": "string", "phone": "string|null", "first_name": "string", "last_name": "string", "username": "string|null"},
+                        "params": {"phone": "string|null", "first_name": "string", "last_name": "string", "username": "string|null"},
                     },
                     # ── Chat Management ──
                     {
                         "name": "telegram.mute_chat",
                         "description": "Mute notifications for a chat",
-                        "params": {"user_id": "string", "chat_id": "number|string"},
+                        "params": {"chat_id": "number|string"},
                     },
                     {
                         "name": "telegram.unmute_chat",
                         "description": "Unmute notifications for a chat",
-                        "params": {"user_id": "string", "chat_id": "number|string"},
+                        "params": {"chat_id": "number|string"},
                     },
                     {
                         "name": "telegram.archive_chat",
                         "description": "Archive a chat",
-                        "params": {"user_id": "string", "chat_id": "number|string"},
+                        "params": {"chat_id": "number|string"},
                     },
                     {
                         "name": "telegram.unarchive_chat",
                         "description": "Unarchive a chat",
-                        "params": {"user_id": "string", "chat_id": "number|string"},
+                        "params": {"chat_id": "number|string"},
                     },
                     # ── Media ──
                     {
                         "name": "telegram.send_file",
                         "description": "Send a file (image, doc, video) to a chat",
-                        "params": {"user_id": "string", "chat_id": "number|string", "file_path": "string", "caption": "string|null"},
+                        "params": {"chat_id": "number|string", "file_path": "string", "caption": "string|null"},
                     },
                     {
                         "name": "telegram.download_media",
                         "description": "Download media from a chat message to a file path",
-                        "params": {"user_id": "string", "chat_id": "number|string", "message_id": "number", "file_path": "string"},
+                        "params": {"chat_id": "number|string", "message_id": "number", "file_path": "string"},
                     },
                     # ── Profile / Self ──
                     {
                         "name": "telegram.get_me",
-                        "description": "Get your own Telegram profile information",
-                        "params": {"user_id": "string"},
+                        "description": "Get your own Telegram profile information (caller identity from Authorization Bearer JWT).",
+                        "params": {},
                     },
                     # ── Extras ──
                     {
                         "name": "telegram.create_poll",
                         "description": "Create a native poll in a chat",
-                        "params": {"user_id": "string", "chat_id": "number", "question": "string", "options": "array", "multiple_choice": "boolean", "quiz_mode": "boolean"},
+                        "params": {"chat_id": "number", "question": "string", "options": "array", "multiple_choice": "boolean", "quiz_mode": "boolean"},
                     },
                     {
                         "name": "telegram.get_user_status",
                         "description": "Get the online status of a user",
-                        "params": {"user_id": "string", "target_user_id": "number|string"},
+                        "params": {"target_user_id": "number|string"},
                     },
                     {
                         "name": "telegram.resolve_username",
                         "description": "Resolve a Telegram username to a user/chat ID",
-                        "params": {"user_id": "string", "username": "string"},
+                        "params": {"username": "string"},
                     },
                     {
                         "name": "telegram.search_public_chats",
                         "description": "Search for public channels, chats, or bots by name",
-                        "params": {"user_id": "string", "query": "string"},
+                        "params": {"query": "string"},
                     },
                 ]
             },
@@ -1140,9 +1154,12 @@ async def disconnect(request: Request) -> JSONResponse:
     except ValueError as exc:
         return JSONResponse(status_code=401, content={"error": str(exc)})
 
-    user_id = decoded.get("uid")
+    user_id = _user_id_from_jwt(decoded)
     if not user_id:
-        return JSONResponse(status_code=401, content={"error": "JWT missing 'uid' claim"})
+        return JSONResponse(
+            status_code=401,
+            content={"error": "JWT missing user identity claim ('uid', 'user_id', or 'sub')"},
+        )
 
     delete_telegram_session(user_id)
     return JSONResponse(content={"success": True, "service": "telegram"})
